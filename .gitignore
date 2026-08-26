@@ -1,0 +1,19 @@
+target/
+*.jar
+node_modules/
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+*.log
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+*.iml
+
+# terraform runtime artifacts
+terraform/tfplan
+*.tfvars
+!terraform.tfvars.example
