@@ -1,0 +1,139 @@
+// ANOOS CI pipeline - declarative Jenkins
+// Assumes the platform is installed per README (Jenkins, Nexus, SonarQube, Trivy, k3s/ArgoCD).
+pipeline {
+    agent {
+        kubernetes {
+            yaml '''
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    app: jenkins-agent
+spec:
+  containers:
+  - name: maven
+    image: maven:3.9-eclipse-temurin-21
+    command: ["sleep"]
+    args: ["infinity"]
+    resources:
+      requests: { cpu: "1", memory: "2Gi" }
+      limits: { cpu: "2", memory: "4Gi" }
+    volumeMounts:
+    - name: maven-cache
+      mountPath: /root/.m2
+  - name: trivy
+    image: aquasec/trivy:0.55.0
+    command: ["sleep"]
+    args: ["infinity"]
+  - name: docker
+    image: docker:27-dind
+    securityContext:
+      privileged: true
+  volumes:
+  - name: maven-cache
+    persistentVolumeClaim:
+      claimName: maven-cache-pvc
+'''
+        }
+    }
+
+    environment {
+        NEXUS_URL        = "http://nexus.anoos.local"
+        NEXUS_REPO       = "demo-apps"
+        NEXUS_CREDS      = credentials('nexus-credentials')
+        SONAR_PROJECT    = "demo-api"
+        IMAGE_REPO       = "nexus-docker.anoos.local:8082/demo-api"
+        IMAGE_TAG        = "${env.BRANCH_NAME}-${env.BUILD_NUMBER}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps { checkout scm }
+        }
+
+        stage('Maven Build + Test') {
+            steps {
+                container('maven') {
+                    sh 'mvn -B clean package'
+                }
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
+                }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                container('maven') {
+                    withSonarQubeEnv('sonarqube') {
+                        sh 'mvn -B sonar:sonar -Dsonar.projectKey=${SONAR_PROJECT}'
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 10, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('Build Image') {
+            steps {
+                container('docker') {
+                    sh 'docker build -t ${IMAGE_REPO}:${IMAGE_TAG} ./apps/demo-api'
+                }
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            steps {
+                container('trivy') {
+                    sh 'trivy image --exit-code 1 --severity HIGH,CRITICAL --no-progress ${IMAGE_REPO}:${IMAGE_TAG}'
+                }
+            }
+        }
+
+        stage('Push to Nexus') {
+            steps {
+                container('docker') {
+                    withCredentials([usernamePassword(credentialsId: 'nexus-credentials', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
+                        sh 'echo "$NEXUS_PASS" | docker login nexus-docker.anoos.local:8082 --username "$NEXUS_USER" --password-stdin'
+                    }
+                }
+            }
+        }
+
+        stage('Push Artifact to Nexus') {
+            steps {
+                container('maven') {
+                    sh 'mvn -B deploy -DskipTests -DaltDeploymentRepository=nexus::default::${NEXUS_URL}/repository/${NEXUS_REPO}/'
+                }
+            }
+        }
+
+        stage('Update GitOps Repo') {
+            steps {
+                // Bump image tag in the manifests repo that ArgoCD watches.
+                // Implement with git plugin + commit, or a small script.
+                sh 'echo "ArgoCD would pick up image tag ${IMAGE_TAG} - see README Phase 5"'
+            }
+        }
+    }
+
+    post {
+        always {
+            container('trivy') {
+                sh 'trivy image --format json --output trivy-report.json ${IMAGE_REPO}:${IMAGE_TAG} || true'
+            }
+            archiveArtifacts artifacts: 'trivy-report.json', allowEmptyArchive: true
+        }
+        failure {
+            echo "Pipeline failed - check stage logs. Quality gate or Trivy scan are the usual suspects."
+        }
+    }
+}
