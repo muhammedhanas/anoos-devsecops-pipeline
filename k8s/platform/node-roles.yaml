@@ -1,0 +1,13 @@
+# Workload pinning: node-1 = control plane (light), node-2 = stateful, node-3 = CI + obs.
+# Requires k3s taints set per README Phase 2:
+#   node-2: kubectl taint node node-2 workload=stateful:NoSchedule
+#   node-3: kubectl taint node node-3 workload=ci:NoSchedule
+# Tolerations below are template lines; add them to each workload that belongs there.
+# Example toleration block:
+# tolerations:
+# - key: workload
+#   operator: Equal
+#   value: stateful
+#   effect: NoSchedule
+# nodeSelector:
+#   kubernetes.io/hostname: node-2
