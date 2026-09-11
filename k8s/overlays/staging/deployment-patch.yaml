@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: demo-api
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: demo-api
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
