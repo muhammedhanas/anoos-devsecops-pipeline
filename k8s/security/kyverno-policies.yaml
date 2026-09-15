@@ -1,0 +1,157 @@
+# Kyverno admission policies - supply-chain enforcement
+# Requires: helm install kyverno kyverno/kyverno -n kyverno --create-namespace
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-signed-images
+  annotations:
+    policies.kyverno.io/title: Require signed images
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Images must carry a cosign signature in the Nexus registry.
+      Blocks unsigned images from reaching the cluster.
+spec:
+  validationFailureAction: Audit   # change to Enforce once signing works end to end
+  background: true
+  rules:
+    - name: check-signature
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [apps-staging, apps-prod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kyverno, platform, observability, argocd]
+      verifyImages:
+        - imageReferences:
+            - "nexus-docker.anoos.local:8082/*"
+          attestors:
+            - entries:
+                - keys:
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      REPLACE_WITH_COSIGN_PUBLIC_KEY
+                      -----END PUBLIC KEY-----
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-latest-tag
+  annotations:
+    policies.kyverno.io/title: Disallow the latest tag
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >-
+      Mutable tags make rollbacks non-deterministic. Every image must be
+      pinned to an immutable tag or digest.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-explicit-tag
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kyverno, platform, observability, argocd]
+      validate:
+        message: "Using the ':latest' tag is not allowed. Pin an immutable tag or digest."
+        pattern:
+          spec:
+            containers:
+              - image: "!*:latest"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-limits
+  annotations:
+    policies.kyverno.io/title: Require resource requests and limits
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >-
+      A container without limits can starve its node. This is the exact failure
+      mode that the node pinning in this platform is designed to prevent.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: validate-resources
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [apps-staging, apps-prod]
+      validate:
+        message: "CPU and memory requests and limits are required."
+        pattern:
+          spec:
+            containers:
+              - resources:
+                  requests:
+                    memory: "?*"
+                    cpu: "?*"
+                  limits:
+                    memory: "?*"
+                    cpu: "?*"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged
+  annotations:
+    policies.kyverno.io/title: Disallow privileged containers
+    policies.kyverno.io/severity: high
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: privileged-containers
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+      exclude:
+        any:
+          - resources:
+              namespaces: [kube-system, kyverno, observability]
+      validate:
+        message: "Privileged containers are not allowed in application namespaces."
+        pattern:
+          spec:
+            containers:
+              # anchor: validate only if the field is present
+              - =(securityContext):
+                  =(privileged): "false"
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-non-root
+  annotations:
+    policies.kyverno.io/title: Require non-root execution
+    policies.kyverno.io/severity: medium
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-runasnonroot
+      match:
+        any:
+          - resources:
+              kinds: [Pod]
+              namespaces: [apps-staging, apps-prod]
+      validate:
+        message: "Pods in application namespaces must set runAsNonRoot: true."
+        anyPattern:
+          - spec:
+              securityContext:
+                runAsNonRoot: true
+          - spec:
+              containers:
+                - securityContext:
+                    runAsNonRoot: true
