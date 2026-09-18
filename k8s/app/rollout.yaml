@@ -1,0 +1,85 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: demo-api
+  labels:
+    app: demo-api
+    app.kubernetes.io/part-of: anoos
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: demo-api
+  strategy:
+    canary:
+      # Traffic is shifted by Traefik using the service weighting below.
+      canaryService: demo-api-canary
+      stableService: demo-api-stable
+      trafficRouting:
+        traefik:
+          weightedTraefikServiceName: demo-api-weighted
+      # Each step pauses for automated analysis before advancing.
+      steps:
+        - setWeight: 10
+        - pause: { duration: 60s }
+        - analysis:
+            templates:
+              - templateName: success-rate
+            args:
+              - name: service-name
+                value: demo-api-canary
+        - setWeight: 25
+        - pause: { duration: 60s }
+        - analysis:
+            templates:
+              - templateName: success-rate
+            args:
+              - name: service-name
+                value: demo-api-canary
+        - setWeight: 50
+        - pause: { duration: 60s }
+        - setWeight: 100
+      # If analysis fails, weight returns to 0 and the previous ReplicaSet is restored.
+      abortScaleDownDelaySeconds: 30
+  template:
+    metadata:
+      labels:
+        app: demo-api
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/actuator/prometheus"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: demo-api
+          image: nexus-docker.anoos.local:8082/demo-api:1.0.0
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 40
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

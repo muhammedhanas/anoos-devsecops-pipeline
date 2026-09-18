@@ -1,0 +1,35 @@
+# The Rollout pauses at each canary step and runs this analysis.
+# If the success rate drops below the threshold, Argo Rollouts aborts the
+# rollout and shifts 100% of traffic back to the stable ReplicaSet.
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+spec:
+  args:
+    - name: service-name
+  metrics:
+    - name: success-rate
+      # Short window so the demo completes in minutes, not hours.
+      interval: 30s
+      # One failure aborts the rollout immediately.
+      failureLimit: 0
+      successCondition: result[0] >= 0.98
+      provider:
+        prometheus:
+          address: http://monitoring-kube-prometheus-prometheus.observability.svc.cluster.local:9090
+          query: |
+            sum(rate(
+              http_server_requests_seconds_count{
+                namespace="{{args.namespace}}",
+                job=~"{{args.service-name}}.*",
+                status!~"5.*"
+              }[1m]
+            ))
+            /
+            sum(rate(
+              http_server_requests_seconds_count{
+                namespace="{{args.namespace}}",
+                job=~"{{args.service-name}}.*"
+              }[1m]
+            ))
